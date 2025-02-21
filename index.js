@@ -15,7 +15,7 @@ app.use(express.json());
 app.use(cookieParser());
 app.use(
   cors({
-    origin: "http://localhost:5175",
+    origin: "http://localhost:5173",
     credentials: true,
   })
 );
@@ -23,31 +23,27 @@ app.use(
 const MERCHANT_KEY = "96434309-7796-489d-8924-ab56988a6076";
 const MERCHANT_ID = "PGTESTPAYUAT86";
 
-// const prod_URL = "https://api.phonepe.com/apis/hermes/pg/v1/pay"
-// const prod_URL = "https://api.phonepe.com/apis/hermes/pg/v1/status"
-
 const MERCHANT_BASE_URL =
   "https://api-preprod.phonepe.com/apis/pg-sandbox/pg/v1/pay";
 const MERCHANT_STATUS_URL =
   "https://api-preprod.phonepe.com/apis/pg-sandbox/pg/v1/status";
 
-const redirectUrl = "http://localhost:8000/status";
-
+const redirectUrl = "http://localhost:4000/status";
 const successUrl = "http://localhost:5173/payment-success";
 const failureUrl = "http://localhost:5173/payment-failure";
 
 app.post("/create-order", async (req, res) => {
-  const { name, mobileNumber, amount } = req.body;
+  const { name, mobileNumber, amount, userId } = req.body;
   const orderId = uuidv4();
 
-  //payment
+  // Payment payload
   const paymentPayload = {
     merchantId: MERCHANT_ID,
     merchantUserId: name,
     mobileNumber: mobileNumber,
     amount: amount * 100,
     merchantTransactionId: orderId,
-    redirectUrl: `${redirectUrl}/?id=${orderId}`,
+    redirectUrl: `${redirectUrl}/?id=${orderId}&userId=${userId}`, // Include userId
     redirectMode: "POST",
     paymentInstrument: {
       type: "PAY_PAGE",
@@ -74,21 +70,25 @@ app.post("/create-order", async (req, res) => {
       request: payload,
     },
   };
+
   try {
     const response = await axios.request(option);
-    console.log(response.data.data.instrumentResponse.redirectInfo.url);
     res.status(200).json({
       msg: "OK",
       url: response.data.data.instrumentResponse.redirectInfo.url,
     });
   } catch (error) {
-    console.log("error in payment", error);
+    console.log("Error initiating payment", error);
     res.status(500).json({ error: "Failed to initiate payment" });
   }
 });
 
+const Payment = require("./models/payment");
+const User = require("./models/user");
+const Event = require("./models/event");
+
 app.post("/status", async (req, res) => {
-  const merchantTransactionId = req.query.id;
+  const { id: merchantTransactionId, userId } = req.query; // Extract userId from query params
 
   const keyIndex = 1;
   const string =
@@ -107,13 +107,49 @@ app.post("/status", async (req, res) => {
     },
   };
 
-  axios.request(option).then((response) => {
-    if (response.data.success === true) {
-      return res.redirect(successUrl);
+  try {
+    const response = await axios.request(option);
+    const paymentStatus = response.data.success ? "success" : "failure";
+
+    // Find the corresponding order from the database (if any) and save the payment status
+    const payment = await Payment.findOne({ orderId: merchantTransactionId });
+
+    if (payment) {
+      payment.paymentStatus = paymentStatus;
+      await payment.save(); // Update the payment status in the database
     } else {
-      return res.redirect(failureUrl);
+      console.log("No payment record found for this order");
     }
-  });
+
+    // Find the user by userId
+    const user = await User.findById(userId); // Use userId from query params
+    if (!user) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    if (paymentStatus === "success") {
+      // Find the event associated with the payment
+      const event = await Event.findById(payment.eventId);
+      if (!event) {
+        return res.status(404).json({ error: "Event not found" });
+      }
+
+      // Add the event to the user's registered events
+      user.registeredEvents.push(payment.eventId);
+      await user.save();
+
+      // Update the event's participant count
+      event.participantsCount += 1;
+      await event.save();
+
+      return res.redirect(successUrl); // Redirect to success URL
+    } else {
+      return res.redirect(failureUrl); // Redirect to failure URL
+    }
+  } catch (error) {
+    console.error("Error verifying payment status:", error);
+    res.status(500).json({ error: "Failed to verify payment status" });
+  }
 });
 
 app.use("/api/users", require("./routes/user"));

@@ -29,5 +29,4 @@ router.get("/users", coordinatorAuth, userController.getUsers);
 router.get("/allusers", adminAuth, userController.getAllUsers);
 
 router.put("/user", studentAuth, userController.updateUser);
-
 module.exports = router;
