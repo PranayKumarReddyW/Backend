@@ -55,6 +55,12 @@ const userSchema = new mongoose.Schema({
     type: Date,
     default: Date.now,
   },
+  attendance: [
+    {
+      eventId: { type: String, required: true },
+      attended: { type: Boolean, default: false },
+    },
+  ],
 });
 
 // Hash password before saving

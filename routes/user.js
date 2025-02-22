@@ -1,5 +1,6 @@
 const express = require("express");
 const router = express.Router();
+const coordinatorController = require("../controllers/coordinator");
 const userController = require("../controllers/user");
 const {
   studentAuth,
@@ -17,6 +18,7 @@ const allowCoordinatorOrAdmin = (req, res, next) => {
 
 router.post("/register", userController.registerUser);
 router.post("/login", userController.loginUser);
+
 router.post("/logout", userController.logoutUser);
 
 router.get("/user", studentAuth, userController.getUser);
@@ -30,3 +32,5 @@ router.get("/allusers", adminAuth, userController.getAllUsers);
 
 router.put("/user", studentAuth, userController.updateUser);
 module.exports = router;
+
+router.post("/attendance", userController.markAttendance);

@@ -1,49 +1,108 @@
 const express = require("express");
 const cookieParser = require("cookie-parser");
 const connectDB = require("./config/database");
-const cors = require("cors");
-const axios = require("axios");
+const nodemailer = require("nodemailer");
 const crypto = require("crypto");
+const cors = require("cors");
 const { v4: uuidv4 } = require("uuid");
-
+const axios = require("axios");
+const User = require("./models/user");
 require("dotenv").config();
+const qrcode = require("qrcode");
+const fs = require("fs");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+
+const FE_URL = process.env.FE_URL;
+const MERCHANT_KEY = process.env.MERCHANT_KEY;
+const MERCHANT_ID = process.env.MERCHANT_ID;
+const MERCHANT_BASE_URL = process.env.MERCHANT_BASE_URL;
+const MERCHANT_STATUS_URL = process.env.MERCHANT_STATUS_URL;
+const redirectUrl = process.env.REDIRECT_URL;
+const LOCAL_HOST = process.env.LOCAL_HOST; // Assuming LOCAL_HOST is set in your .env file.
 
 app.use(express.json());
 app.use(cookieParser());
 app.use(
   cors({
-    origin: "http://localhost:5173",
+    origin: "http://localhost:5175",
     credentials: true,
   })
 );
 
-const MERCHANT_KEY = "96434309-7796-489d-8924-ab56988a6076";
-const MERCHANT_ID = "PGTESTPAYUAT86";
+app.post("/send-qr-code", (req, res) => {
+  const { data, receiverEmail } = req.body;
 
-const MERCHANT_BASE_URL =
-  "https://api-preprod.phonepe.com/apis/pg-sandbox/pg/v1/pay";
-const MERCHANT_STATUS_URL =
-  "https://api-preprod.phonepe.com/apis/pg-sandbox/pg/v1/status";
+  if (!data || !receiverEmail) {
+    return res
+      .status(400)
+      .json({ message: "Data and receiverEmail are required." });
+  }
 
-const redirectUrl = "http://localhost:4000/status";
-const successUrl = "http://localhost:5173/payment-success";
-const failureUrl = "http://localhost:5173/payment-failure";
+  const imgPath = "qr_code.png";
+
+  // Convert the data object to a JSON string before generating QR code
+  const dataString = JSON.stringify(data);
+
+  // Generate the QR code
+  qrcode.toFile(imgPath, dataString, function (err) {
+    if (err) {
+      console.error("Error generating QR code:", err);
+      return res.status(500).json({ message: "Error generating QR code" });
+    }
+
+    // Create a transporter object for nodemailer
+    const transporter = nodemailer.createTransport({
+      service: "gmail",
+      auth: {
+        user: process.env.EMAIL_USER, // Sender's email address
+        pass: process.env.EMAIL_PASS, // Sender's email password (Use app-specific password for Gmail)
+      },
+    });
+
+    // Define the email options
+    const mailOptions = {
+      from: process.env.EMAIL_USER,
+      to: receiverEmail, // Receiver's email address from the request body
+      subject: "QR Code Attachment",
+      text: "Please find the attached QR code with your details.",
+      attachments: [
+        {
+          filename: "qr_code.png",
+          path: imgPath, // Path to the generated QR code image
+        },
+      ],
+    };
+
+    // Send the email
+    transporter.sendMail(mailOptions, (error, info) => {
+      if (error) {
+        console.error("Error sending email:", error);
+        return res.status(500).json({ message: "Error sending email" });
+      } else {
+        console.log("Email sent: " + info.response);
+        res.status(200).json({ message: "Email sent successfully!" });
+      }
+
+      // Optionally, delete the image after sending the email
+      fs.unlinkSync(imgPath);
+    });
+  });
+});
 
 app.post("/create-order", async (req, res) => {
-  const { name, mobileNumber, amount, userId } = req.body;
+  const { name, mobileNumber, amount, userId, eventId } = req.body;
   const orderId = uuidv4();
 
-  // Payment payload
+  // Payment
   const paymentPayload = {
     merchantId: MERCHANT_ID,
     merchantUserId: name,
     mobileNumber: mobileNumber,
     amount: amount * 100,
     merchantTransactionId: orderId,
-    redirectUrl: `${redirectUrl}/?id=${orderId}&userId=${userId}`, // Include userId
+    redirectUrl: `${redirectUrl}/?id=${orderId}&userId=${userId}&eventId=${eventId}`,
     redirectMode: "POST",
     paymentInstrument: {
       type: "PAY_PAGE",
@@ -73,22 +132,21 @@ app.post("/create-order", async (req, res) => {
 
   try {
     const response = await axios.request(option);
+    console.log(response.data.data.instrumentResponse.redirectInfo.url);
     res.status(200).json({
       msg: "OK",
       url: response.data.data.instrumentResponse.redirectInfo.url,
     });
   } catch (error) {
-    console.log("Error initiating payment", error);
+    console.error("Error in payment:", error);
     res.status(500).json({ error: "Failed to initiate payment" });
   }
 });
 
-const Payment = require("./models/payment");
-const User = require("./models/user");
-const Event = require("./models/event");
-
 app.post("/status", async (req, res) => {
-  const { id: merchantTransactionId, userId } = req.query; // Extract userId from query params
+  const merchantTransactionId = req.query.id;
+  const userId = req.query.userId;
+  const eventId = req.query.eventId;
 
   const keyIndex = 1;
   const string =
@@ -109,46 +167,45 @@ app.post("/status", async (req, res) => {
 
   try {
     const response = await axios.request(option);
-    const paymentStatus = response.data.success ? "success" : "failure";
 
-    // Find the corresponding order from the database (if any) and save the payment status
-    const payment = await Payment.findOne({ orderId: merchantTransactionId });
+    if (response.data.success === true) {
+      // Update the user's registered events if payment is successful
+      const updatedUser = await User.findOneAndUpdate(
+        { _id: userId }, // Find user by userId
+        { $push: { registeredEvents: eventId } }, // Add eventId to registeredEvents array
+        { new: true } // Return the updated user document
+      );
 
-    if (payment) {
-      payment.paymentStatus = paymentStatus;
-      await payment.save(); // Update the payment status in the database
-    } else {
-      console.log("No payment record found for this order");
-    }
+      // Prepare data for QR code
+      const qrCodeData = {
+        name: updatedUser.name,
+        branch: updatedUser.branch,
+        registrationNumber: updatedUser.registrationNumber,
+        eventId: eventId,
+      };
 
-    // Find the user by userId
-    const user = await User.findById(userId); // Use userId from query params
-    if (!user) {
-      return res.status(404).json({ error: "User not found" });
-    }
+      // Call the send-qr-code API to send the QR code to the user
+      const qrCodeResponse = await axios.post(`${LOCAL_HOST}/send-qr-code`, {
+        data: qrCodeData,
+        receiverEmail: updatedUser.email, // Assuming user's email is stored in the user document
+      });
 
-    if (paymentStatus === "success") {
-      // Find the event associated with the payment
-      const event = await Event.findById(payment.eventId);
-      if (!event) {
-        return res.status(404).json({ error: "Event not found" });
+      // Check if QR code was successfully sent
+      if (qrCodeResponse.status === 200) {
+        return res.status(200).json({
+          message: "Payment successful and QR code sent",
+          user: updatedUser, // Return the updated user
+          redirectUrl: "/success-page", // You can adjust the redirect URL as needed
+        });
+      } else {
+        return res.status(500).json({ message: "QR code sending failed" });
       }
-
-      // Add the event to the user's registered events
-      user.registeredEvents.push(payment.eventId);
-      await user.save();
-
-      // Update the event's participant count
-      event.participantsCount += 1;
-      await event.save();
-
-      return res.redirect(successUrl); // Redirect to success URL
     } else {
-      return res.redirect(failureUrl); // Redirect to failure URL
+      return res.status(400).json({ message: "Payment failed" });
     }
   } catch (error) {
-    console.error("Error verifying payment status:", error);
-    res.status(500).json({ error: "Failed to verify payment status" });
+    console.error("Error during payment status check:", error);
+    return res.status(500).json({ message: "Payment status check failed" });
   }
 });
 

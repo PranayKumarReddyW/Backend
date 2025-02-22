@@ -12,15 +12,15 @@ exports.registerCoordinator = async (req, res) => {
   const { name, email, phone, role, department, password } = req.body;
 
   try {
-    const existingEmail = await Coodrinator.findOne({ email });
+    const existingEmail = await Coordinator.findOne({ email });
     if (existingEmail)
       return res.status(400).json({ message: "Email already in use" });
 
-    const existingPhoneNumber = await Coodrinator.findOne({ phone });
+    const existingPhoneNumber = await Coordinator.findOne({ phone });
     if (existingPhoneNumber)
       return res.status(400).json({ message: "Phone number already in use" });
 
-    const coordinator = new Coodrinator({
+    const coordinator = new Coordinator({
       name,
       email,
       phone,
@@ -46,7 +46,7 @@ exports.loginCoordinator = async (req, res) => {
   const { email, password } = req.body;
 
   try {
-    const coordinator = await Coodrinator.findOne({ email });
+    const coordinator = await Coordinator.findOne({ email });
     if (!coordinator)
       return res.status(400).json({ message: "Invalid credentials" });
 

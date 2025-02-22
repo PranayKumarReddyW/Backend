@@ -206,3 +206,26 @@ exports.getUser = async (req, res) => {
     res.status(500).json({ message: "Server error" });
   }
 };
+
+exports.markAttendance = async (req, res) => {
+  try {
+    const { userId, eventId } = req.user;
+    const user = await User.findById({ _id: userId });
+    if (!user) return res.status(404).json({ message: "User not found" });
+    if (user.attended)
+      return res.status(400).json({ message: "Attendance already marked" });
+    if (!user.registeredEvents.includes(eventId)) {
+      return res.status(400).json({ message: "User not registered for event" });
+    }
+
+    await User.findByIdAndUpdate(
+      { _id: userId },
+      { $set: { "attendance.$[elem].attended": true } },
+      { arrayFilters: [{ "elem.eventId": eventId }], new: true }
+    );
+    res.status(200).json({ message: "Attendance marked successfully" });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: "Server error" });
+  }
+};
